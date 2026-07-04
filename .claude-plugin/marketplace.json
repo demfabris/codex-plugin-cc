@@ -1,7 +1,7 @@
 {
-  "name": "openai-codex",
+  "name": "codex-cc",
   "owner": {
-    "name": "OpenAI"
+    "name": "demfabris"
   },
   "metadata": {
     "description": "Codex in Claude Code for review, implementation handoff, and research.",
