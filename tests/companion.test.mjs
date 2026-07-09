@@ -4,6 +4,14 @@ import assert from "node:assert/strict";
 import { buildCodexArgs, resolveCodexArgs } from "../plugins/codex/scripts/codex-companion.mjs";
 
 const WEB_SEARCH = ["-c", "tools.web_search=true"];
+const NETWORK = ["-c", "sandbox_workspace_write.network_access=true"];
+const CONTRACT_MARKER = "[verification contract]";
+
+// Handoff prompts carry the verification contract; assert on the task text and
+// the marker separately so the contract's wording stays free to evolve.
+function taskPrompt(args) {
+  return args.at(-1);
+}
 
 test("setup maps to codex doctor", () => {
   assert.deepEqual(resolveCodexArgs("setup", []), ["doctor"]);
@@ -63,41 +71,83 @@ test("research requires a question", () => {
 });
 
 test("handoff runs workspace-write by default", () => {
-  assert.deepEqual(resolveCodexArgs("handoff", ["implement retries"]), [
-    "exec",
-    ...WEB_SEARCH,
-    "-s",
-    "workspace-write",
-    "--skip-git-repo-check",
-    "implement retries"
-  ]);
+  const args = resolveCodexArgs("handoff", ["implement retries"]);
+  assert.deepEqual(args.slice(0, -1), ["exec", ...WEB_SEARCH, "-s", "workspace-write", "--skip-git-repo-check"]);
+  assert.match(taskPrompt(args), /^implement retries\n/);
 });
 
 test("handoff --full-access upgrades the sandbox", () => {
-  assert.deepEqual(resolveCodexArgs("handoff", ["--full-access", "do it"]), [
-    "exec",
-    ...WEB_SEARCH,
-    "-s",
-    "danger-full-access",
-    "--skip-git-repo-check",
-    "do it"
-  ]);
+  const args = resolveCodexArgs("handoff", ["--full-access", "do it"]);
+  assert.deepEqual(args.slice(0, -1), ["exec", ...WEB_SEARCH, "-s", "danger-full-access", "--skip-git-repo-check"]);
 });
 
-test("handoff --resume continues the last session without re-passing sandbox", () => {
-  assert.deepEqual(resolveCodexArgs("handoff", ["--resume", "apply the top fix"]), [
+test("every handoff prompt carries the verification contract", () => {
+  for (const argv of [["implement retries"], ["--resume", "keep going"], ["--full-access", "do it"]]) {
+    assert.ok(taskPrompt(resolveCodexArgs("handoff", argv)).includes(CONTRACT_MARKER));
+  }
+});
+
+test("review and research prompts stay contract-free", () => {
+  assert.ok(!taskPrompt(resolveCodexArgs("review", ["check auth"])).includes(CONTRACT_MARKER));
+  assert.ok(!taskPrompt(resolveCodexArgs("research", ["why slow"])).includes(CONTRACT_MARKER));
+});
+
+// `codex exec resume` has no `-s`; unpinned it falls back to the user's
+// config.toml sandbox, which silently escalates or silently drops every edit.
+test("handoff --resume pins the sandbox instead of inheriting it", () => {
+  const args = resolveCodexArgs("handoff", ["--resume", "apply the top fix"]);
+  assert.deepEqual(args.slice(0, -1), [
     "exec",
     "resume",
     "--last",
     ...WEB_SEARCH,
-    "apply the top fix"
+    "-c",
+    "sandbox_mode=workspace-write"
   ]);
+  assert.match(taskPrompt(args), /^apply the top fix\n/);
+});
+
+test("handoff --resume --full-access resumes with the upgraded sandbox", () => {
+  const args = resolveCodexArgs("handoff", ["--resume", "--full-access", "keep going"]);
+  assert.ok(args.includes("sandbox_mode=danger-full-access"));
+  assert.ok(!args.includes("sandbox_mode=workspace-write"));
 });
 
 test("handoff --resume with no text falls back to a continue prompt", () => {
   const args = resolveCodexArgs("handoff", ["--resume"]);
   assert.deepEqual(args.slice(0, 5), ["exec", "resume", "--last", ...WEB_SEARCH]);
-  assert.match(args.at(-1), /Continue from the current thread state/);
+  assert.match(taskPrompt(args), /Continue from the current thread state/);
+});
+
+// workspace-write cuts the network; --network restores it without also giving up
+// the filesystem sandbox the way --full-access does.
+test("handoff --network opens the network inside the workspace-write sandbox", () => {
+  const args = resolveCodexArgs("handoff", ["--network", "sync the staging bucket"]);
+  assert.deepEqual(args.slice(0, -1), [
+    "exec",
+    ...WEB_SEARCH,
+    ...NETWORK,
+    "-s",
+    "workspace-write",
+    "--skip-git-repo-check"
+  ]);
+});
+
+test("handoff --network is redundant under --full-access and is dropped", () => {
+  const args = resolveCodexArgs("handoff", ["--network", "--full-access", "do it"]);
+  assert.ok(!args.includes("sandbox_workspace_write.network_access=true"));
+  assert.ok(args.includes("danger-full-access"));
+});
+
+test("handoff --resume --network carries the network override", () => {
+  const args = resolveCodexArgs("handoff", ["--resume", "--network", "keep going"]);
+  assert.ok(args.includes("sandbox_workspace_write.network_access=true"));
+  assert.ok(args.includes("sandbox_mode=workspace-write"));
+});
+
+test("--network does not leak into review or research", () => {
+  assert.ok(!resolveCodexArgs("review", ["--network", "check auth"]).includes("sandbox_workspace_write.network_access=true"));
+  assert.ok(!resolveCodexArgs("research", ["--network", "why slow"]).includes("sandbox_workspace_write.network_access=true"));
 });
 
 test("handoff without a task or --resume throws", () => {
@@ -120,7 +170,7 @@ test("spark alias resolves to the codex spark model, case-insensitively", () => 
 test("--effort becomes a model_reasoning_effort config override", () => {
   const args = resolveCodexArgs("handoff", ["--effort", "high", "ship it"]);
   assert.deepEqual(args.slice(0, 4), ["exec", "-c", "model_reasoning_effort=high", "-c"]);
-  assert.equal(args.at(-1), "ship it");
+  assert.match(taskPrompt(args), /^ship it\n/);
 });
 
 test("wait/background execution hints are swallowed, not sent to Codex", () => {
@@ -132,14 +182,9 @@ test("wait/background execution hints are swallowed, not sent to Codex", () => {
 
 test("a single $ARGUMENTS string is re-tokenized into flags and prompt", () => {
   // Slash commands pass the whole argument line as one argv entry.
-  assert.deepEqual(resolveCodexArgs("handoff", ["--wait fix the login bug"]), [
-    "exec",
-    ...WEB_SEARCH,
-    "-s",
-    "workspace-write",
-    "--skip-git-repo-check",
-    "fix the login bug"
-  ]);
+  const args = resolveCodexArgs("handoff", ["--wait fix the login bug"]);
+  assert.deepEqual(args.slice(0, -1), ["exec", ...WEB_SEARCH, "-s", "workspace-write", "--skip-git-repo-check"]);
+  assert.match(taskPrompt(args), /^fix the login bug\n/);
 });
 
 test("unknown subcommand throws", () => {
