@@ -63,17 +63,21 @@ Read-only Codex review of your current work, with web search enabled so the revi
 
 Hand an implementation task to Codex with **workspace write access**. Codex edits files and runs commands in the repo to complete the task.
 
-- `--resume` continues the most recent Codex session in this repo ("keep going", "apply the top fix").
-- `--full-access` upgrades to `danger-full-access` (no sandbox). Use sparingly.
+- `--resume` continues the most recent Codex session in this repo ("keep going", "apply the top fix"). The sandbox is pinned to this invocation's flags, so re-pass `--network`/`--full-access` if you still want them.
+- `--network` keeps the filesystem sandbox but opens the network. Needed for anything that talks to a cloud API, a database, or a tunnel.
+- `--full-access` upgrades to `danger-full-access` (no sandbox). Use sparingly — prefer `--network`.
 - `-m <model>` / `--effort <e>` are optional; `spark` maps to `gpt-5.3-codex-spark`.
 
 ```bash
 /codex:handoff implement the retry logic in the http client
 /codex:handoff --resume apply the top fix from the last run
+/codex:handoff --network reconcile the staging bucket against the manifest
 /codex:handoff --wait fix the failing test
 ```
 
 Fire several at once — each runs as its own Claude Code background shell, so you can orchestrate a fleet of Codex agents in parallel.
+
+Every handoff prompt carries a **verification contract**: Codex must name the exact command and exit code behind each gate it claims passed, report env-gated or skipped tests as SKIPPED instead of passing, name the build target and feature flags it compiled, stop when the task references something that no longer exists at HEAD, and disclose deviations. It makes Codex's report auditable — it does not make the report true. Re-run the gates yourself before you trust them.
 
 ### `/codex:research`
 

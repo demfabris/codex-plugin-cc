@@ -19,6 +19,23 @@ const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 
+// Appended to every handoff prompt. Each rule exists because Codex broke it in a
+// real run and a clean "all gates green" report hid the damage: a ClickHouse
+// syntax error behind an env-gated test that self-skipped in 0.00s; a `cargo
+// check` that passed against a vendored submodule the build doesn't consume; a
+// fix compiled only with its test feature on, breaking the production build; and
+// two retired SQL views faithfully recreated from a spec that had gone stale.
+// Codex cannot be trusted to self-certify, so make it show its work instead.
+const HANDOFF_CONTRACT = [
+  "",
+  "[verification contract]",
+  "- A gate you did not run is not a gate. For every build, lint, or test you claim passed, give the exact command and its exit code. If you did not run it, write \"not run\".",
+  "- A test that did not execute is not a pass. Report env-gated, filtered, or skipped tests as SKIPPED even when the suite is green. A near-zero runtime means it never ran.",
+  "- Name what you compiled: the exact package/target and the feature flags. If the code has feature-gated paths, also build the configuration that ships to production, not only the one your change compiles under.",
+  "- If the task references a file, symbol, table, or migration that does not exist at HEAD, stop and report the discrepancy. Do not recreate it to satisfy the instructions.",
+  "- Report every deviation from the task. Do not widen scope, and do not edit files the task did not name."
+].join("\n");
+
 const SUBCOMMANDS = new Set(["review", "handoff", "research", "setup"]);
 
 function printUsage() {
@@ -26,7 +43,7 @@ function printUsage() {
     [
       "Usage:",
       "  node scripts/codex-companion.mjs review    [--base <ref>|--commit <sha>] [-m <model>] [--effort <e>] [--no-web-search] [focus text]",
-      "  node scripts/codex-companion.mjs handoff   [--full-access] [--resume] [-m <model>] [--effort <e>] [--no-web-search] <task>",
+      "  node scripts/codex-companion.mjs handoff   [--full-access] [--network] [--resume] [-m <model>] [--effort <e>] [--no-web-search] <task>",
       "  node scripts/codex-companion.mjs research  [-m <model>] [--effort <e>] [--no-web-search] <question>",
       "  node scripts/codex-companion.mjs setup"
     ].join("\n")
@@ -73,6 +90,33 @@ function configArgs(options) {
   return args;
 }
 
+function sandboxMode(options) {
+  return options["full-access"] ? "danger-full-access" : "workspace-write";
+}
+
+// `workspace-write` sandboxes the filesystem *and* cuts the network, which
+// silently dooms any task that has to reach a cloud API or a database. Rather
+// than force `--full-access` (which drops the filesystem sandbox too), let
+// `--network` punch a hole for just the network. `danger-full-access` already
+// has one, so the override is redundant there.
+function networkArgs(options, mode) {
+  if (!options.network || mode !== "workspace-write") {
+    return [];
+  }
+  return ["-c", "sandbox_workspace_write.network_access=true"];
+}
+
+// `codex exec resume` takes no `-s`. Left alone it falls back to the sandbox in
+// the user's config.toml — neither the resumed session's sandbox nor the
+// workspace-write default a fresh handoff would get. So `--resume` silently
+// escalates to `danger-full-access` for anyone whose config says so, and
+// silently drops every edit for anyone whose config says `read-only`. Sandbox is
+// reachable as a config key, so pin it to the mode this handoff actually asked
+// for.
+function resumeSandboxArgs(mode) {
+  return ["-c", `sandbox_mode=${mode}`];
+}
+
 function reviewTargetArgs(options) {
   if (options.base) {
     return ["--base", String(options.base)];
@@ -81,6 +125,12 @@ function reviewTargetArgs(options) {
     return ["--commit", String(options.commit)];
   }
   return ["--uncommitted"];
+}
+
+// The contract trails the task: it governs how Codex reports, which is the last
+// thing it does, and it must not push the actual request out of the lead.
+function withContract(prompt) {
+  return `${prompt}\n${HANDOFF_CONTRACT}`;
 }
 
 /**
@@ -123,16 +173,34 @@ export function buildCodexArgs(subcommand, options = {}, positionals = []) {
     }
 
     case "handoff": {
-      const sandbox = options["full-access"] ? "danger-full-access" : "workspace-write";
+      const sandbox = sandboxMode(options);
       if (options.resume) {
-        // Continue the most recent Codex session in this repo. Sandbox is
-        // inherited from the resumed session, so we don't re-pass -s here.
-        return ["exec", "resume", "--last", ...modelArgs(options), ...configArgs(options), prompt || DEFAULT_CONTINUE_PROMPT];
+        // Continue the most recent Codex session in this repo, re-asserting the
+        // sandbox rather than inheriting whatever the last run happened to use.
+        return [
+          "exec",
+          "resume",
+          "--last",
+          ...modelArgs(options),
+          ...configArgs(options),
+          ...networkArgs(options, sandbox),
+          ...resumeSandboxArgs(sandbox),
+          withContract(prompt || DEFAULT_CONTINUE_PROMPT)
+        ];
       }
       if (!prompt) {
         throw new Error("Provide a task for Codex to implement, or pass --resume to continue the last handoff.");
       }
-      return ["exec", ...modelArgs(options), ...configArgs(options), "-s", sandbox, "--skip-git-repo-check", prompt];
+      return [
+        "exec",
+        ...modelArgs(options),
+        ...configArgs(options),
+        ...networkArgs(options, sandbox),
+        "-s",
+        sandbox,
+        "--skip-git-repo-check",
+        withContract(prompt)
+      ];
     }
 
     default:
@@ -146,7 +214,7 @@ function parseSubcommand(argv) {
     // `wait`/`background` are Claude Code execution hints. We accept and ignore
     // them so they can't leak into the Codex prompt as positional text; the
     // slash command decides foreground vs run_in_background, not this script.
-    booleanOptions: ["full-access", "resume", "no-web-search", "uncommitted", "wait", "background"],
+    booleanOptions: ["full-access", "network", "resume", "no-web-search", "uncommitted", "wait", "background"],
     aliasMap: { m: "model" }
   });
 }
