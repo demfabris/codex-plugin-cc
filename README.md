@@ -28,7 +28,7 @@ Add the marketplace in Claude Code:
 Install the plugin and reload:
 
 ```bash
-/plugin install codex@openai-codex
+/plugin install codex@codex-cc
 /reload-plugins
 ```
 
