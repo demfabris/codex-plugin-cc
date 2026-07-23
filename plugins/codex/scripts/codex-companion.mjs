@@ -36,13 +36,44 @@ const HANDOFF_CONTRACT = [
   "- Report every deviation from the task. Do not widen scope, and do not edit files the task did not name."
 ].join("\n");
 
+// Appended to every review prompt. Review is a second opinion on a plan, idea,
+// or proposal — not a diff walk. The failure mode of an LLM reviewer is polite
+// agreement: it restates the proposal back with adjectives and calls it sound.
+// So demand a verdict, a severity-ordered list of concrete breakages, and a
+// stated condition that would change its mind.
+const REVIEW_CONTRACT = [
+  "",
+  "[review contract]",
+  "- Open with a verdict: SOUND, SOUND WITH CHANGES, or DON'T DO THIS. Then justify it. Do not restate the proposal back.",
+  "- Ground it in this repo. If the proposal names a file, symbol, table, dependency, or command, check it exists at HEAD and say so when it does not.",
+  "- Separate what you verified from what you assumed. Label every unverified claim as an assumption.",
+  "- Order problems by severity, and give each a concrete failure: the input, state, or sequence that makes it break. Cut anything you cannot make concrete.",
+  "- Name the simplest alternative that reaches the same outcome, including doing nothing, and say why the proposal beats it or does not.",
+  "- End with what would change your mind. Agreement with no stated reason is not a review."
+].join("\n");
+
+// Appended to every research prompt. Research is the deep web pass: what
+// approaches exist, what they cost, which one fits. Left unconstrained the model
+// answers from memory and calls it research, so make the web pass and the
+// tradeoff comparison explicit, and force it to date what it found.
+const RESEARCH_CONTRACT = [
+  "",
+  "[research contract]",
+  "- Actually search the web. Prefer primary sources — docs, specs, changelogs, issue threads, benchmarks — over blog summaries, and cite each claim with a URL.",
+  "- Surface at least three genuinely distinct approaches, including the boring one and doing nothing. If fewer than three exist, say why.",
+  "- Compare them in a table on the axes that decide this call: complexity, failure modes, operational burden, cost, and how reversible each is.",
+  "- Date your evidence. Libraries and APIs move; give the version or date you checked and flag anything you could not confirm is current.",
+  "- Separate observed facts from inference, and list the open questions you could not close.",
+  "- End with one recommendation and the condition that would flip it."
+].join("\n");
+
 const SUBCOMMANDS = new Set(["review", "handoff", "research", "setup"]);
 
 function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs review    [--base <ref>|--commit <sha>] [-m <model>] [--effort <e>] [--no-web-search] [focus text]",
+      "  node scripts/codex-companion.mjs review    [-m <model>] [--effort <e>] [--no-web-search] <plan|idea|proposal>",
       "  node scripts/codex-companion.mjs handoff   [--full-access] [--network] [--resume] [-m <model>] [--effort <e>] [--no-web-search] <task>",
       "  node scripts/codex-companion.mjs research  [-m <model>] [--effort <e>] [--no-web-search] <question>",
       "  node scripts/codex-companion.mjs setup"
@@ -117,20 +148,25 @@ function resumeSandboxArgs(mode) {
   return ["-c", `sandbox_mode=${mode}`];
 }
 
-function reviewTargetArgs(options) {
-  if (options.base) {
-    return ["--base", String(options.base)];
-  }
-  if (options.commit) {
-    return ["--commit", String(options.commit)];
-  }
-  return ["--uncommitted"];
+// Review and research are the same shape — a read-only prompt run that can still
+// shell out to inspect the repo (`git diff`, `rg`) but cannot write. Only the
+// contract riding on the prompt differs.
+function readOnlyArgs(options, prompt) {
+  return [
+    "exec",
+    ...modelArgs(options),
+    ...configArgs(options),
+    "-s",
+    "read-only",
+    "--skip-git-repo-check",
+    prompt
+  ];
 }
 
-// The contract trails the task: it governs how Codex reports, which is the last
-// thing it does, and it must not push the actual request out of the lead.
-function withContract(prompt) {
-  return `${prompt}\n${HANDOFF_CONTRACT}`;
+// The contract trails the prompt: it governs how Codex reports, which is the
+// last thing it does, and it must not push the actual request out of the lead.
+function withContract(prompt, contract) {
+  return `${prompt}\n${contract}`;
 }
 
 /**
@@ -146,30 +182,21 @@ export function buildCodexArgs(subcommand, options = {}, positionals = []) {
       // `codex doctor` diagnoses install, auth, config, and runtime health.
       return ["doctor"];
 
-    case "review":
-      // Read-only by nature; web search on so the reviewer can check docs/CVEs.
-      return [
-        "exec",
-        "review",
-        ...modelArgs(options),
-        ...configArgs(options),
-        ...reviewTargetArgs(options),
-        ...(prompt ? [prompt] : [])
-      ];
+    case "review": {
+      // A second opinion on a plan or proposal, not a diff walk — so this is a
+      // plain read-only prompt run, not `codex exec review` (which is pinned to
+      // git targets). Web search stays on so it can check docs and prior art.
+      if (!prompt) {
+        throw new Error("Provide a plan, idea, or proposal for Codex to weigh in on.");
+      }
+      return readOnlyArgs(options, withContract(prompt, REVIEW_CONTRACT));
+    }
 
     case "research": {
       if (!prompt) {
         throw new Error("Provide a question for Codex to research.");
       }
-      return [
-        "exec",
-        ...modelArgs(options),
-        ...configArgs(options),
-        "-s",
-        "read-only",
-        "--skip-git-repo-check",
-        prompt
-      ];
+      return readOnlyArgs(options, withContract(prompt, RESEARCH_CONTRACT));
     }
 
     case "handoff": {
@@ -185,7 +212,7 @@ export function buildCodexArgs(subcommand, options = {}, positionals = []) {
           ...configArgs(options),
           ...networkArgs(options, sandbox),
           ...resumeSandboxArgs(sandbox),
-          withContract(prompt || DEFAULT_CONTINUE_PROMPT)
+          withContract(prompt || DEFAULT_CONTINUE_PROMPT, HANDOFF_CONTRACT)
         ];
       }
       if (!prompt) {
@@ -199,7 +226,7 @@ export function buildCodexArgs(subcommand, options = {}, positionals = []) {
         "-s",
         sandbox,
         "--skip-git-repo-check",
-        withContract(prompt)
+        withContract(prompt, HANDOFF_CONTRACT)
       ];
     }
 
@@ -210,11 +237,11 @@ export function buildCodexArgs(subcommand, options = {}, positionals = []) {
 
 function parseSubcommand(argv) {
   return parseArgs(normalizeArgv(argv), {
-    valueOptions: ["model", "effort", "base", "commit"],
+    valueOptions: ["model", "effort"],
     // `wait`/`background` are Claude Code execution hints. We accept and ignore
     // them so they can't leak into the Codex prompt as positional text; the
     // slash command decides foreground vs run_in_background, not this script.
-    booleanOptions: ["full-access", "network", "resume", "no-web-search", "uncommitted", "wait", "background"],
+    booleanOptions: ["full-access", "network", "resume", "no-web-search", "wait", "background"],
     aliasMap: { m: "model" }
   });
 }

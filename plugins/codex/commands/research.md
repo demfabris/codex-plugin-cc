@@ -1,25 +1,29 @@
 ---
-description: Ask Codex to research a question read-only (with web search) and report findings
-argument-hint: '[--wait|--background] [-m <model>] [--effort <e>] <question>'
+description: Send Codex on a deep web search to compare approaches and tradeoffs for a problem
+argument-hint: '[--wait|--background] [-m <model>] [--effort <e>] <problem or question>'
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-Delegate a research question to Codex. Codex runs **read-only** with web search enabled — it investigates the code and the web and reports findings, but changes nothing.
+Send a problem to Codex for a deep web pass. Codex runs **read-only** with web search enabled — it searches the web, reads the repo for context, and reports what approaches exist and what each one costs. It changes nothing.
 
 Raw slash-command arguments:
 `$ARGUMENTS`
 
 Core constraint:
-- Read-only. Codex must not edit files. This is for investigation, root-cause analysis, comparing approaches, or gathering external context.
+- Read-only. Codex must not edit files. This is for surveying approaches, weighing tradeoffs, and gathering external context — not for implementing the answer.
 - Your job is to run it and return the findings verbatim — do not act on them in the same turn.
+
+What to send:
+- State the **problem**, not just a keyword. Include the constraints that narrow the answer: the stack and versions in play, what the solution has to interoperate with, what has already been ruled out and why.
+- Every research prompt carries a **research contract** telling Codex to actually search the web and cite primary sources with URLs, surface at least three genuinely distinct approaches (including the boring one and doing nothing), compare them in a tradeoff table, date its evidence and flag what it could not confirm is current, split observed facts from inference, and close with one recommendation plus the condition that would flip it.
 
 Execution (backgrounding is Claude Code's job):
 - The command:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" research "$ARGUMENTS"
 ```
-- Default to **background**:
+- Default to **background** — a deep web pass takes a while:
 ```typescript
 Bash({ command, description: "Codex research", run_in_background: true })
 ```
@@ -27,6 +31,6 @@ Bash({ command, description: "Codex research", run_in_background: true })
 - If the args include `--wait`, run it in the **foreground** (generous `timeout`, up to 600000ms) and stream the result.
 
 Output rules:
-- Return Codex's findings exactly as-is, preserving its structure (observed facts, inferences, open questions, next steps).
-- Keep any uncertainty or inference markers Codex included.
+- Return Codex's findings exactly as-is, preserving its structure (approaches, tradeoff table, sources, open questions, recommendation).
+- Keep the citations and every uncertainty or inference marker Codex included. A tradeoff stripped of its source is just an opinion.
 - Do not implement anything based on the research without the user asking first.

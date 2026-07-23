@@ -5,10 +5,12 @@ import { buildCodexArgs, resolveCodexArgs } from "../plugins/codex/scripts/codex
 
 const WEB_SEARCH = ["-c", "tools.web_search=true"];
 const NETWORK = ["-c", "sandbox_workspace_write.network_access=true"];
-const CONTRACT_MARKER = "[verification contract]";
+const HANDOFF_MARKER = "[verification contract]";
+const REVIEW_MARKER = "[review contract]";
+const RESEARCH_MARKER = "[research contract]";
 
-// Handoff prompts carry the verification contract; assert on the task text and
-// the marker separately so the contract's wording stays free to evolve.
+// Every prompt carries a contract; assert on the request text and the marker
+// separately so contract wording stays free to evolve.
 function taskPrompt(args) {
   return args.at(-1);
 }
@@ -17,53 +19,38 @@ test("setup maps to codex doctor", () => {
   assert.deepEqual(resolveCodexArgs("setup", []), ["doctor"]);
 });
 
-test("review defaults to uncommitted working tree with web search", () => {
-  assert.deepEqual(resolveCodexArgs("review", []), ["exec", "review", ...WEB_SEARCH, "--uncommitted"]);
+// Review is an opinion on a proposal, not a diff walk, so it is a plain
+// read-only prompt run — never `codex exec review` with a git target.
+test("review runs read-only with web search and no git target", () => {
+  const args = resolveCodexArgs("review", ["should we shard by tenant id"]);
+  assert.deepEqual(args.slice(0, -1), ["exec", ...WEB_SEARCH, "-s", "read-only", "--skip-git-repo-check"]);
+  assert.match(taskPrompt(args), /^should we shard by tenant id\n/);
 });
 
-test("review honors --base", () => {
-  assert.deepEqual(resolveCodexArgs("review", ["--base", "main"]), [
-    "exec",
-    "review",
-    ...WEB_SEARCH,
-    "--base",
-    "main"
-  ]);
+test("review does not invoke the codex review subcommand or its git targets", () => {
+  const args = resolveCodexArgs("review", ["--base", "main", "is this plan sane"]);
+  assert.ok(!args.includes("review"));
+  assert.ok(!args.includes("--uncommitted"));
+  assert.ok(!args.includes("--base"));
 });
 
-test("review honors --commit", () => {
-  assert.deepEqual(resolveCodexArgs("review", ["--commit", "abc123"]), [
-    "exec",
-    "review",
-    ...WEB_SEARCH,
-    "--commit",
-    "abc123"
-  ]);
-});
-
-test("review appends focus text as a trailing prompt", () => {
-  assert.deepEqual(resolveCodexArgs("review", ["check the auth flow"]), [
-    "exec",
-    "review",
-    ...WEB_SEARCH,
-    "--uncommitted",
-    "check the auth flow"
-  ]);
+test("review requires a proposal", () => {
+  assert.throws(() => resolveCodexArgs("review", []), /Provide a plan, idea, or proposal/);
 });
 
 test("--no-web-search disables the web search override", () => {
-  assert.deepEqual(resolveCodexArgs("review", ["--no-web-search"]), ["exec", "review", "--uncommitted"]);
+  assert.deepEqual(resolveCodexArgs("review", ["--no-web-search", "thoughts?"]).slice(0, -1), [
+    "exec",
+    "-s",
+    "read-only",
+    "--skip-git-repo-check"
+  ]);
 });
 
 test("research runs read-only with web search and skips the git repo check", () => {
-  assert.deepEqual(resolveCodexArgs("research", ["why is startup slow"]), [
-    "exec",
-    ...WEB_SEARCH,
-    "-s",
-    "read-only",
-    "--skip-git-repo-check",
-    "why is startup slow"
-  ]);
+  const args = resolveCodexArgs("research", ["why is startup slow"]);
+  assert.deepEqual(args.slice(0, -1), ["exec", ...WEB_SEARCH, "-s", "read-only", "--skip-git-repo-check"]);
+  assert.match(taskPrompt(args), /^why is startup slow\n/);
 });
 
 test("research requires a question", () => {
@@ -83,13 +70,26 @@ test("handoff --full-access upgrades the sandbox", () => {
 
 test("every handoff prompt carries the verification contract", () => {
   for (const argv of [["implement retries"], ["--resume", "keep going"], ["--full-access", "do it"]]) {
-    assert.ok(taskPrompt(resolveCodexArgs("handoff", argv)).includes(CONTRACT_MARKER));
+    assert.ok(taskPrompt(resolveCodexArgs("handoff", argv)).includes(HANDOFF_MARKER));
   }
 });
 
-test("review and research prompts stay contract-free", () => {
-  assert.ok(!taskPrompt(resolveCodexArgs("review", ["check auth"])).includes(CONTRACT_MARKER));
-  assert.ok(!taskPrompt(resolveCodexArgs("research", ["why slow"])).includes(CONTRACT_MARKER));
+// Each subcommand gets exactly its own contract — a review that inherited the
+// handoff's gate table, or research told to stay in scope, would report the
+// wrong shape entirely.
+test("each subcommand carries only its own contract", () => {
+  const prompts = {
+    handoff: taskPrompt(resolveCodexArgs("handoff", ["ship it"])),
+    review: taskPrompt(resolveCodexArgs("review", ["is this plan sane"])),
+    research: taskPrompt(resolveCodexArgs("research", ["how do others do this"]))
+  };
+  const markers = { handoff: HANDOFF_MARKER, review: REVIEW_MARKER, research: RESEARCH_MARKER };
+
+  for (const [subcommand, prompt] of Object.entries(prompts)) {
+    for (const [owner, marker] of Object.entries(markers)) {
+      assert.equal(prompt.includes(marker), subcommand === owner, `${subcommand} vs ${marker}`);
+    }
+  }
 });
 
 // `codex exec resume` has no `-s`; unpinned it falls back to the user's
@@ -155,16 +155,17 @@ test("handoff without a task or --resume throws", () => {
 });
 
 test("spark alias resolves to the codex spark model, case-insensitively", () => {
-  assert.deepEqual(resolveCodexArgs("research", ["-m", "SPARK", "look into it"]), [
+  const args = resolveCodexArgs("research", ["-m", "SPARK", "look into it"]);
+  assert.deepEqual(args.slice(0, -1), [
     "exec",
     "-m",
     "gpt-5.3-codex-spark",
     ...WEB_SEARCH,
     "-s",
     "read-only",
-    "--skip-git-repo-check",
-    "look into it"
+    "--skip-git-repo-check"
   ]);
+  assert.match(taskPrompt(args), /^look into it\n/);
 });
 
 test("--effort becomes a model_reasoning_effort config override", () => {

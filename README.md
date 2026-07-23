@@ -1,14 +1,14 @@
 # Codex plugin for Claude Code
 
-Use Codex from inside Claude Code to review code, hand off implementation tasks, or research — without leaving your Claude Code session.
+Use Codex from inside Claude Code to pressure-test a plan, hand off implementation tasks, or research a problem — without leaving your Claude Code session.
 
 > This is a fork that rewrites the plugin around the `codex exec` CLI. It drops the bespoke app-server broker, background job board, and stop-gate hook in favor of shelling straight into Codex and letting Claude Code own backgrounding. See [What changed in 2.0](#what-changed-in-20).
 
 ## What You Get
 
-- `/codex:review` — read-only code review of your local git changes, with web search
+- `/codex:review` — read-only second opinion on a plan, idea, or proposal, with web search
 - `/codex:handoff` — hand an implementation task to Codex with full write access to the repo
-- `/codex:research` — ask Codex to investigate a question read-only, with web search
+- `/codex:research` — deep web pass on a problem: approaches, tradeoffs, sources
 - `/codex:setup` — check that Codex is installed and authenticated
 
 ## Requirements
@@ -48,16 +48,18 @@ Then check readiness:
 
 ### `/codex:review`
 
-Read-only Codex review of your current work, with web search enabled so the reviewer can check docs and advisories. It does **not** change code.
-
-- Default target is the uncommitted working tree.
-- `--base <ref>` reviews the branch against a base; `--commit <sha>` reviews a single commit.
+A second opinion on a plan, idea, or proposal — before you build it. Codex runs **read-only** with web search: it can read the repo and shell out to `git diff` / `rg` to check your plan against what's actually there, but it changes nothing.
 
 ```bash
-/codex:review
-/codex:review --base main
+/codex:review should we move the job queue into postgres instead of redis
+/codex:review the plan in docs/rfc-sharding.md — is the backfill step safe
+/codex:review read the uncommitted diff and tell me if the retry logic is sound
 /codex:review --wait          # stream in the foreground instead of backgrounding
 ```
+
+Every review prompt carries a **review contract**: lead with a verdict (SOUND / SOUND WITH CHANGES / DON'T DO THIS), check the proposal's claims against HEAD, label unverified claims as assumptions, order problems by severity with a concrete failure each, name the simplest alternative including doing nothing, and say what would change its mind. The point is to make disagreement cheap — an LLM reviewer's default failure is restating your plan back to you with adjectives.
+
+Codex only sees what you send it. If the plan lives in your Claude Code conversation, restate it in the prompt or point at a file.
 
 ### `/codex:handoff`
 
@@ -81,12 +83,16 @@ Every handoff prompt carries a **verification contract**: Codex must name the ex
 
 ### `/codex:research`
 
-Ask Codex to investigate **read-only**, with web search. Good for root-cause analysis, comparing approaches, or gathering external context. It reports findings and changes nothing.
+A deep web pass on a problem. Codex runs **read-only** with web search: it surveys how the problem is actually solved out there, weighs the tradeoffs, and reports back. It changes nothing.
 
 ```bash
-/codex:research why does the build regress after upgrading vite
-/codex:research --wait compare tokio vs async-std for this workload
+/codex:research how do people do multi-tenant row-level security in postgres at our scale
+/codex:research --wait tokio vs async-std for a latency-sensitive proxy in 2026
 ```
+
+Every research prompt carries a **research contract**: cite primary sources with URLs, surface at least three genuinely distinct approaches (including the boring one and doing nothing), compare them in a tradeoff table, date the evidence and flag what couldn't be confirmed current, split observed facts from inference, and close with one recommendation plus the condition that would flip it.
+
+State the problem, not a keyword — the stack and versions in play, what it has to interoperate with, what's already ruled out. A vague question gets a Wikipedia answer.
 
 ## How backgrounding works
 

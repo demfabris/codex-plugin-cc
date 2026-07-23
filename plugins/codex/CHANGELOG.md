@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.0
+
+- **Breaking:** `/codex:review` is no longer a git-diff review. It is now a second
+  opinion on a plan, idea, or proposal: a read-only prompt run instead of
+  `codex exec review`. `--base`, `--commit`, and `--uncommitted` are gone, and a
+  prompt is now required. Codex still runs inside the repo and can shell out to
+  `git diff`/`rg`, so "review the uncommitted diff" still works — you ask for it
+  in prose rather than through a flag.
+- `/codex:review` prompts carry a **review contract**: lead with a verdict
+  (SOUND / SOUND WITH CHANGES / DON'T DO THIS), check the proposal's claims
+  against HEAD, label unverified claims as assumptions, order problems by
+  severity with a concrete failure each, name the simplest alternative including
+  doing nothing, and state what would change its mind.
+- `/codex:research` is now an explicit deep web pass. Its prompts carry a
+  **research contract**: search the web and cite primary sources with URLs,
+  surface at least three genuinely distinct approaches (including the boring one
+  and doing nothing), compare them in a tradeoff table, date the evidence, split
+  observed facts from inference, and close with one recommendation plus the
+  condition that would flip it.
+
 ## 2.1.0
 
 - `handoff --resume` now pins the sandbox instead of leaving it unset. `codex exec

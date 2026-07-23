@@ -1,9 +1,9 @@
 {
   "name": "@openai/codex-plugin-cc",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "description": "Use Codex from Claude Code to review code, hand off implementation tasks, or research.",
+  "description": "Use Codex from Claude Code to review plans, hand off implementation tasks, or research problems.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.18.0"
